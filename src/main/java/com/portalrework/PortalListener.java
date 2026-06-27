@@ -1,32 +1,26 @@
 package com.portalrework;
-
-import org.bukkit.plugin.java.JavaPlugin;
-
-public class PortalRework extends JavaPlugin {
-    private static PortalRework instance;
-    private PortalManager portalManager;
-
-    @Override
-    public void onEnable() {
-        instance = this;
-        portalManager = new PortalManager();
-        portalManager.loadData();
-        getServer().getPluginManager().registerEvents(new PortalListener(portalManager), this);
-        getLogger().info("Portal121Compat插件已启用");
-    }
-
-    @Override
-    public void onDisable() {
-        portalManager.saveData();
-        getLogger().info("Portal121Compat已保存，插件已关闭");
-    }
-
-    public static PortalRework getInstance() {
-        return instance;
-    }
-
-    public PortalManager getPortalManager() {
-        return portalManager;
-    }
-}
-
+ import org.bukkit.plugin.java.JavaPlugin;
+ import java.util.logging.Logger;
+ public class PortalRework extends JavaPlugin {
+     private static PortalRework instance;
+     private PortalManager portalManager;
+     @Override
+     public void onEnable() {
+         instance = this;
+         portalManager = new PortalManager();
+         portalManager.loadData();
+         getServer().getPluginManager().registerEvents(new PortalListener(portalManager), this);
+         getLogger().info("Portal121Compat已启用");
+     }
+     @Override
+     public void onDisable() {
+         portalManager.saveData();
+         getLogger().info("Portal保存，插件已关闭");
+     }
+     public static PortalRework getInstance() {
+         return instance;
+     }
+     public PortalManager getPortalManager() {
+         return portalManager;
+     }
+ }
