@@ -1,1 +1,7 @@
+name: PortalRework
+version: 1.0.0
+main: com.portalrework.PortalRework
+api-version: 1.20
+author: PortalRework
+description: 复刻1.21地狱门生成机制，修复无限刷黑曜石漏洞
 
