@@ -56,40 +56,6 @@
                     <encoding>UTF-8</encoding>
                 </configuration>
             </plugin>
-
-            <!-- 强制将 yml 文件注入到打好包的 JAR 中（兜底方案） -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-antrun-plugin</artifactId>
-                <version>3.1.0</version>
-                <executions>
-                    <execution>
-                        <id>inject-yml</id>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>run</goal>
-                        </goals>
-                        <configuration>
-                            <target>
-                                <echo message="=== 强制注入 plugin.yml 和 paper-plugin.yml 到 JAR ===" />
-                                <exec executable="jar" dir="${project.build.directory}" failonerror="true">
-                                    <arg value="uf" />
-                                    <arg value="${project.build.finalName}.jar" />
-                                    <arg value="-C" />
-                                    <arg value="${project.basedir}/src/main/resources" />
-                                    <arg value="plugin.yml" />
-                                    <arg value="paper-plugin.yml" />
-                                </exec>
-                                <echo message="=== 验证 JAR 内容 ===" />
-                                <exec executable="jar" dir="${project.build.directory}" failonerror="false">
-                                    <arg value="tf" />
-                                    <arg value="${project.build.finalName}.jar" />
-                                </exec>
-                            </target>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
         </plugins>
     </build>
 </project>
