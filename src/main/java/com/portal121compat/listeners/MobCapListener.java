@@ -29,6 +29,15 @@ public class MobCapListener implements Listener {
     /** 强制锁定的敌对生物上限 */
     private static final int FORCED_HOSTILE_CAP = 70;
 
+    /** 计数缓存有效期（毫秒），避免每次生成都全图扫描 */
+    private static final long CACHE_TTL_MS = 1000;
+
+    /** 上次计数时间戳 */
+    private long lastCountTime = 0;
+
+    /** 缓存的敌对生物数量 */
+    private int cachedCount = 0;
+
     /** 敌对生物实体类型集合（用于快速判断） */
     private static final java.util.Set<EntityType> HOSTILE_TYPES = Set.of(
             EntityType.ZOMBIE,
@@ -111,24 +120,35 @@ public class MobCapListener implements Listener {
 
     /**
      * 统计所有已加载世界中的敌对生物总数
+     * <p>
+     * 使用 1 秒缓存避免每次生成事件都全图扫描实体，
+     * 缓存过期后重新计数。
      *
      * @return 敌对生物数量
      */
     private int countHostileMobs() {
+        long now = System.currentTimeMillis();
+        if (now - lastCountTime < CACHE_TTL_MS) {
+            return cachedCount;
+        }
+
         int count = 0;
         for (org.bukkit.World world : plugin.getServer().getWorlds()) {
             for (org.bukkit.entity.Entity entity : world.getEntities()) {
                 if (entity instanceof org.bukkit.entity.Mob mob) {
                     if (isHostileMob(mob.getType())) {
                         count++;
-                        // 提前终止：已达上限无需继续计数
                         if (count >= FORCED_HOSTILE_CAP) {
+                            lastCountTime = now;
+                            cachedCount = count;
                             return count;
                         }
                     }
                 }
             }
         }
+        lastCountTime = now;
+        cachedCount = count;
         return count;
     }
 }

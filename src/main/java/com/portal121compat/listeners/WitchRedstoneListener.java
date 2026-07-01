@@ -9,7 +9,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.inventory.ItemStack;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
@@ -105,7 +105,20 @@ public class WitchRedstoneListener implements Listener {
         // 抢夺 II：4~10（4/20, 3/20, 4/20）
         // 抢夺 III：4~11
         int redstoneCount = rollRedstone(random, lootingLevel);
-        event.getDrops().add(new ItemStack(Material.REDSTONE_WIRE, redstoneCount));
+
+        // 1.20.5+ REDSTONE 被拆分为 REDSTONE_WIRE(方块) 和 REDSTONE(物品)
+        // 但 Bukkit API 的 Material.REDSTONE 在某些版本中已不存在
+        // 使用 REDSTONE_WIRE 作为掉落物时，服务端可能无法正确渲染
+        // 因此直接尝试 REDSTONE，不存在则 fallback 到 REDSTONE_WIRE
+        Material redstoneMat = Material.matchMaterial("REDSTONE");
+        if (redstoneMat == null) {
+            redstoneMat = Material.REDSTONE_WIRE;
+            plugin.getLogger().warning(
+                    "Material.REDSTONE 不存在，使用 REDSTONE_WIRE 作为替代");
+        }
+
+        ItemStack redstoneDrop = new ItemStack(redstoneMat, redstoneCount);
+        event.getDrops().add(redstoneDrop);
     }
 
     /**
@@ -176,7 +189,7 @@ public class WitchRedstoneListener implements Listener {
      * @return 数量→权重映射
      */
     private Map<Integer, Integer> buildRedstoneWeights(int range) {
-        Map<Integer, Integer> map = new HashMap<>();
+        Map<Integer, Integer> map = new LinkedHashMap<>();
 
         if (range == 6) {
             // 抢夺 I: 4(1/10) 5(1/5) 6(1/5) 7(1/5) 8(1/5) 9(1/10)

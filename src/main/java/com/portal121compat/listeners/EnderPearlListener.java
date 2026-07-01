@@ -74,7 +74,7 @@ public class EnderPearlListener implements Listener {
 
         // 计算对端坐标（8:1 换算）
         Location targetPos = calculateTargetPosition(
-                hitBlock.getLocation(), currentWorld);
+                hitBlock.getLocation(), currentWorld, targetWorld);
 
         // 在对端查找或创建传送门
         Location portalLoc = plugin.getPortalManager()
@@ -137,13 +137,14 @@ public class EnderPearlListener implements Listener {
     /**
      * 计算对端目标坐标（主世界↔下界 8:1 坐标换算）
      *
-     * @param source 源坐标
+     * @param source      源坐标
      * @param sourceWorld 源维度
+     * @param targetWorld 目标维度（已由调用方计算，避免重复查询）
      * @return 对端目标坐标
      */
-    private Location calculateTargetPosition(Location source, World sourceWorld) {
-        World targetWorld = getTargetDimension(sourceWorld);
-        if (targetWorld == null) return null;
+    private Location calculateTargetPosition(Location source,
+                                               World sourceWorld,
+                                               World targetWorld) {
 
         if (sourceWorld.getEnvironment() == World.Environment.NETHER) {
             return new Location(targetWorld,
