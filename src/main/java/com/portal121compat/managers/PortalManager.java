@@ -206,6 +206,13 @@ public class PortalManager {
         double minDist = Double.MAX_VALUE;
 
         for (Location portal : portalsInWorld) {
+            // 包围盒快速剔除：X/Z 轴任一方向超出范围则跳过
+            int dx = Math.abs(portal.getBlockX() - target.getBlockX());
+            int dz = Math.abs(portal.getBlockZ() - target.getBlockZ());
+            if (dx > radius || dz > radius) {
+                continue;
+            }
+
             double dist = portal.distanceSquared(target);
             if (dist <= (double) radius * radius && dist < minDist) {
                 nearest = portal;
