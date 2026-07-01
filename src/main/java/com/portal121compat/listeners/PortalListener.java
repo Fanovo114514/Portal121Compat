@@ -1,18 +1,21 @@
 package com.portal121compat.listeners;
 
+import com.portal121compat.Portal121Compat;
 import com.portal121compat.managers.PortalManager;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
-import org.bukkit.event.entity.EntityPortalEvent;
+import org.bukkit.event.entity.EntityPortalEnterEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerPortalEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
 
 /**
  * 传送门核心监听器（复刻 1.21 全实体传送门机制）
@@ -24,9 +27,12 @@ import org.bukkit.event.player.PlayerPortalEvent;
  *   <li>传送门被破坏后，实体穿过时会在搜索范围内寻找已有门，
  *       找不到则在原版搜索起始坐标处原地生成新门</li>
  * </ul>
+ * <p>
+ * 注意：Paper 1.20.6 没有 EntityPortalEvent（1.21+ 新增），
+ * 非玩家实体通过 EntityPortalEnterEvent + 手动传送实现。
  *
  * @author Portal121Compat
- * @version 1.2.0
+ * @version 1.3.0
  */
 public class PortalListener implements Listener {
 
@@ -41,14 +47,12 @@ public class PortalListener implements Listener {
     /**
      * 监听玩家传送门传送
      * <p>
-     * 使用 LOWEST 优先级，在原版处理之前介入。
-     * 原版 1.20.6 已经内置了搜索+创门逻辑（仅限玩家），
-     * 但 1.21 的搜索行为有微调。这里保持原版逻辑不变，
-     * 仅在原版未找到门时确保正确生成。
+     * Paper 1.20.6 中 PlayerPortalEvent 继承 PlayerTeleportEvent，
+     * 使用 getCause() 判断传送原因（而非 1.21 的 getPortalType()）。
      */
     @EventHandler(priority = EventPriority.HIGH)
     public void onPlayerPortal(PlayerPortalEvent event) {
-        if (event.getPortalType() != PlayerPortalEvent.PortalType.NETHER) {
+        if (event.getCause() != PlayerTeleportEvent.TeleportCause.NETHER_PORTAL) {
             return;
         }
 
@@ -57,16 +61,13 @@ public class PortalListener implements Listener {
         World targetWorld = to.getWorld();
         if (targetWorld == null) return;
 
-        // 先用 PortalManager 索引查找已有传送门
         Location nearest = portalManager.findNearestPortal(to);
 
         if (nearest != null) {
-            // 找到已有传送门 → 修复门框 + 指向该门
             portalManager.repairPortal(nearest);
             event.setTo(nearest.clone().add(0.5, 0, 0.5));
             event.setCanCreatePortal(false);
         } else {
-            // 未找到 → 在搜索起始坐标处生成新传送门
             Location portalPos = new Location(
                     targetWorld,
                     to.getBlockX(),
@@ -82,43 +83,53 @@ public class PortalListener implements Listener {
     // ==================== 非玩家实体传送门事件 ====================
 
     /**
-     * 监听非玩家实体传送门传送事件（1.21 核心改动）
+     * 监听非玩家实体进入传送门（1.21 核心改动）
      * <p>
-     * 1.20.6 原版中非玩家实体可以穿过传送门，但对端
-     * 不会创建新门（搜索行为有限）。
-     * 1.21 改为所有实体均可触发完整的搜索+创门逻辑。
+     * Paper 1.20.6 中没有 EntityPortalEvent（1.21+ 新增），
+     * 使用 EntityPortalEnterEvent 检测实体进入传送门，
+     * 然后手动计算对端坐标、查找/创建传送门、传送实体。
+     * <p>
+     * 使用 LOWEST 优先级确保在原版传送逻辑之前拦截。
      */
-    @EventHandler(priority = EventPriority.HIGH)
-    public void onEntityPortal(EntityPortalEvent event) {
-        if (event.getPortalType() != EntityPortalEvent.PortalType.NETHER) {
-            return;
-        }
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onEntityEnterPortal(EntityPortalEnterEvent event) {
+        Entity entity = event.getEntity();
 
         // 跳过玩家（由 PlayerPortalEvent 处理）
-        if (event.getEntity() instanceof Player) {
+        if (entity instanceof Player) {
             return;
         }
 
-        Location to = event.getTo();
-        if (to == null) return;
-        World targetWorld = to.getWorld();
+        Location portalBlock = event.getLocation();
+        World sourceWorld = portalBlock.getWorld();
+        if (sourceWorld == null) return;
+
+        // 确定对端维度
+        World targetWorld = getTargetDimension(sourceWorld);
         if (targetWorld == null) return;
 
-        Location nearest = portalManager.findNearestPortal(to);
+        // 计算对端目标坐标（8:1 换算）
+        Location targetPos = calculateTargetPosition(
+                portalBlock, sourceWorld, targetWorld);
 
+        // 在对端查找或创建传送门
+        Location nearest = portalManager.findNearestPortal(targetPos);
+        Location teleportDest;
         if (nearest != null) {
             portalManager.repairPortal(nearest);
-            event.setTo(nearest.clone().add(0.5, 0, 0.5));
+            teleportDest = nearest.clone().add(0.5, 0, 0.5);
         } else {
-            Location portalPos = new Location(
-                    targetWorld,
-                    to.getBlockX(),
-                    to.getBlockY(),
-                    to.getBlockZ());
-
-            portalManager.createFullPortal(portalPos);
-            event.setTo(portalPos.clone().add(0.5, 0, 0.5));
+            portalManager.createFullPortal(targetPos);
+            teleportDest = targetPos.clone().add(0.5, 0, 0.5);
         }
+
+        // 延迟 1 tick 传送实体（等待传送门方块就绪）
+        final Location dest = teleportDest;
+        org.bukkit.Bukkit.getScheduler().runTaskLater(
+                Portal121Compat.getInstance(), () -> {
+                    if (!entity.isValid()) return;
+                    entity.teleportAsync(dest);
+                }, 1L);
     }
 
     // ==================== 手动激活传送门 ====================
@@ -140,9 +151,8 @@ public class PortalListener implements Listener {
         }
         if (clicked.getType() != Material.OBSIDIAN) return;
 
-        // 延迟 5 tick 检查是否成功创建了传送门
         org.bukkit.Bukkit.getScheduler().runTaskLater(
-                com.portal121compat.Portal121Compat.getInstance(), () -> {
+                Portal121Compat.getInstance(), () -> {
                     World world = clicked.getWorld();
                     if (world == null) return;
 
@@ -154,7 +164,7 @@ public class PortalListener implements Listener {
                     if (targetWorld == null) return;
 
                     Location targetPos = calculateTargetPosition(
-                            portalCenter, world);
+                            portalCenter, world, targetWorld);
                     if (targetPos == null) return;
 
                     Location nearest = portalManager.findNearestPortal(targetPos);
@@ -185,10 +195,8 @@ public class PortalListener implements Listener {
     }
 
     private Location calculateTargetPosition(Location source,
-                                               World sourceWorld) {
-        World targetWorld = getTargetDimension(sourceWorld);
-        if (targetWorld == null) return null;
-
+                                               World sourceWorld,
+                                               World targetWorld) {
         if (sourceWorld.getEnvironment() == World.Environment.NETHER) {
             return new Location(targetWorld,
                     source.getBlockX() * 8,
