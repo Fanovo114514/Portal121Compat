@@ -10,6 +10,7 @@ import org.bukkit.configuration.file.YamlConfiguration;
 
 import java.io.File;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -18,9 +19,17 @@ import java.util.concurrent.locks.ReentrantLock;
  * 负责传送门坐标的持久化存储、搜索、创建与修复。
  * 支持异步保存，避免高频生成时阻塞主线程。
  * 所有坐标数据存储在 portals.yml 中。
+ * <p>
+ * 优化项：
+ * <ul>
+ *   <li>批量方块更新：一次 tick 内合并所有方块变更</li>
+ *   <li>防重复修复：同一传送门 20 tick 内不重复 repair</li>
+ *   <li>智能位置搜索：自动寻找合法放置位置</li>
+ *   <li>四角方块保护：已有固体方块的四角不替换</li>
+ * </ul>
  *
  * @author Portal121Compat
- * @version 1.0.0
+ * @version 2.0.0
  */
 public class PortalManager {
 
@@ -50,6 +59,15 @@ public class PortalManager {
 
     /** 所属插件实例 */
     private final Portal121Compat plugin;
+
+    /** 每个传送门的上次修复时间戳（tick），防止重复修复 */
+    private final Map<String, Long> lastRepairTick = new ConcurrentHashMap<>();
+
+    /** 防重复修复冷却时间（tick） */
+    private static final long REPAIR_COOLDOWN_TICKS = 20L;
+
+    /** 待保存标记，避免高频重复写入 */
+    private volatile boolean pendingSave = false;
 
     /**
      * 构造传送门管理器
@@ -84,8 +102,6 @@ public class PortalManager {
 
     /**
      * 从 portals.yml 加载传送门数据
-     * <p>
-     * 自动过滤无效坐标（空世界、格式错误），防止脏数据导致异常。
      */
     public void loadData() {
         if (!dataFile.exists()) {
@@ -118,12 +134,21 @@ public class PortalManager {
     }
 
     /**
+     * 标记需要保存，延迟到下一个 tick 执行（防高频写入）
+     */
+    private void markDirty() {
+        if (pendingSave) return;
+        pendingSave = true;
+        org.bukkit.Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            pendingSave = false;
+            saveData();
+        }, 1L);
+    }
+
+    /**
      * 异步保存传送门数据到 portals.yml
-     * <p>
-     * 使用独立线程执行文件 IO，不阻塞主线程。
      */
     public void saveData() {
-        // 构建数据快照，避免并发修改
         final List<Location> snapshot = new ArrayList<>(generatedPortals.size());
         for (Location loc : generatedPortals) {
             if (isValidLocation(loc)) {
@@ -131,7 +156,6 @@ public class PortalManager {
             }
         }
 
-        // 异步写入文件
         org.bukkit.Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             saveLock.lock();
             try {
@@ -164,12 +188,6 @@ public class PortalManager {
 
     // ==================== 传送门查找 ====================
 
-    /**
-     * 获取指定位置的传送门搜索半径
-     *
-     * @param target 目标位置
-     * @return 搜索半径（方块数）
-     */
     public int getSearchRadius(Location target) {
         World world = target.getWorld();
         if (world == null) {
@@ -181,21 +199,12 @@ public class PortalManager {
                 : searchRadiusOverworld;
     }
 
-    /**
-     * 查找距目标位置最近的传送门
-     * <p>
-     * 使用世界分区索引加速查找，避免全量遍历。
-     *
-     * @param target 目标位置
-     * @return 最近的传送门中心坐标，未找到返回 null
-     */
     public Location findNearestPortal(Location target) {
         World targetWorld = target.getWorld();
         if (targetWorld == null) {
             return null;
         }
 
-        // 利用世界索引缩小搜索范围
         List<Location> portalsInWorld = worldIndex.get(targetWorld.getName());
         if (portalsInWorld == null || portalsInWorld.isEmpty()) {
             return null;
@@ -206,7 +215,6 @@ public class PortalManager {
         double minDist = Double.MAX_VALUE;
 
         for (Location portal : portalsInWorld) {
-            // 包围盒快速剔除：X/Z 轴任一方向超出范围则跳过
             int dx = Math.abs(portal.getBlockX() - target.getBlockX());
             int dz = Math.abs(portal.getBlockZ() - target.getBlockZ());
             if (dx > radius || dz > radius) {
@@ -226,17 +234,26 @@ public class PortalManager {
     // ==================== 传送门创建与修复 ====================
 
     /**
-     * 修复指定位置的传送门（替换为黑曜石门框 + 传送门方块）
+     * 修复指定位置的传送门（带冷却 + 批量更新 + 四角保护）
      * <p>
-     * 以中心坐标为基准，按配置的宽高重建标准下界传送门。
+     * 同一传送门 20 tick 内不重复修复，避免连续穿过时卡顿。
+     * 四角已有固体方块时保留不替换。
      *
-     * @param center 传送门中心坐标（搜索结果的返回值）
+     * @param center 传送门中心坐标
      */
     public void repairPortal(Location center) {
         World world = center.getWorld();
-        if (world == null) {
+        if (world == null) return;
+
+        // 防重复修复冷却
+        String key = world.getName() + "," + center.getBlockX()
+                + "," + center.getBlockY() + "," + center.getBlockZ();
+        long now = org.bukkit.Bukkit.getCurrentTick();
+        Long lastTick = lastRepairTick.get(key);
+        if (lastTick != null && now - lastTick < REPAIR_COOLDOWN_TICKS) {
             return;
         }
+        lastRepairTick.put(key, now);
 
         int w = portalWidth;
         int h = portalHeight;
@@ -244,64 +261,193 @@ public class PortalManager {
         int baseY = center.getBlockY() - (h / 2);
         int baseZ = center.getBlockZ();
 
+        // 计算四角坐标（相对 baseX, baseY, baseZ）
+        // 传送门是 w×h 的矩形，四角为：
+        //   (0, 0), (w-1, 0), (0, h-1), (w-1, h-1)
+        Set<String> protectedCorners = new HashSet<>();
+        int[][] cornerOffsets = {
+                {0, 0}, {w - 1, 0},
+                {0, h - 1}, {w - 1, h - 1}
+        };
+        for (int[] corner : cornerOffsets) {
+            Block cornerBlock = world.getBlockAt(
+                    baseX + corner[0], baseY + corner[1], baseZ);
+            Material type = cornerBlock.getType();
+            // 四角已有非空气、非传送门方块时保护
+            if (type != Material.AIR
+                    && type != Material.CAVE_AIR
+                    && type != Material.VOID_AIR
+                    && type != Material.NETHER_PORTAL) {
+                protectedCorners.add(corner[0] + "," + corner[1]);
+            }
+        }
+
+        // 批量收集需要变更的方块
+        List<Block> obsidianBlocks = new ArrayList<>();
+        List<Block> portalBlocks = new ArrayList<>();
+
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
-                Block block = world.getBlockAt(baseX + x, baseY + y, baseZ);
+                // 四角保护检查
+                if (protectedCorners.contains(x + "," + y)) {
+                    continue;
+                }
 
-                // 边缘为黑曜石门框，内部为传送门方块
+                Block block = world.getBlockAt(baseX + x, baseY + y, baseZ);
                 boolean isFrame = (x == 0 || x == w - 1
                         || y == 0 || y == h - 1);
-                block.setType(isFrame
+                Material targetType = isFrame
                         ? Material.OBSIDIAN
-                        : Material.NETHER_PORTAL);
+                        : Material.NETHER_PORTAL;
+
+                // 只收集需要变更的方块
+                if (block.getType() != targetType) {
+                    if (isFrame) {
+                        obsidianBlocks.add(block);
+                    } else {
+                        portalBlocks.add(block);
+                    }
+                }
             }
+        }
+
+        // 批量应用方块变更
+        for (Block block : obsidianBlocks) {
+            block.setType(Material.OBSIDIAN, false);
+        }
+        for (Block block : portalBlocks) {
+            block.setType(Material.NETHER_PORTAL, false);
         }
     }
 
     /**
-     * 创建完整传送门（修复门框 + 注册坐标）
+     * 创建完整传送门（智能位置搜索 + 修复门框 + 注册坐标）
      * <p>
-     * 如果该坐标已存在于记录中，仅修复门框不重复注册。
+     * 先在目标位置附近搜索合法放置点，再创建传送门。
      *
-     * @param center 传送门中心坐标
+     * @param center 传送门中心坐标（可能不合法，会自动搜索附近位置）
      */
     public void createFullPortal(Location center) {
-        // 修复门框
-        repairPortal(center);
+        World world = center.getWorld();
+        if (world == null) return;
+
+        // 智能搜索合法放置位置
+        Location validPos = findValidPortalPosition(center);
+
+        // 修复门框（带冷却 + 四角保护）
+        repairPortal(validPos);
 
         // 去重检查
-        String worldName = center.getWorld() != null
-                ? center.getWorld().getName() : null;
-        if (worldName == null) {
-            return;
-        }
-
+        String worldName = world.getName();
         for (Location portal : generatedPortals) {
             if (portal.getWorld() == null) continue;
             if (!portal.getWorld().getName().equals(worldName)) continue;
-            if (portal.getBlockX() == center.getBlockX()
-                    && portal.getBlockY() == center.getBlockY()
-                    && portal.getBlockZ() == center.getBlockZ()) {
-                // 已存在，修复完毕即可
-                saveData();
+            if (portal.getBlockX() == validPos.getBlockX()
+                    && portal.getBlockY() == validPos.getBlockY()
+                    && portal.getBlockZ() == validPos.getBlockZ()) {
+                markDirty();
                 return;
             }
         }
 
         // 注册新传送门
-        Location newPortal = center.clone();
+        Location newPortal = validPos.clone();
         generatedPortals.add(newPortal);
         indexPortal(newPortal);
-        saveData();
+        markDirty();
+    }
+
+    /**
+     * 在目标位置附近搜索合法的传送门放置位置
+     * <p>
+     * 原版 Minecraft 会在目标位置附近搜索一个可以放置传送门的空间。
+     * 本方法在 ±8 格范围内搜索，优先选择中心位置，
+     * 找不到时回退到中心位置（强制创建）。
+     *
+     * @param center 目标中心坐标
+     * @return 合法的传送门中心坐标
+     */
+    private Location findValidPortalPosition(Location center) {
+        World world = center.getWorld();
+        if (world == null) return center;
+
+        int cx = center.getBlockX();
+        int cy = center.getBlockY();
+        int cz = center.getBlockZ();
+        int w = portalWidth;
+        int h = portalHeight;
+
+        // 先检查中心位置是否可用
+        if (isPositionValid(world, cx, cy, cz, w, h)) {
+            return new Location(world, cx, cy, cz);
+        }
+
+        // 在 ±8 格范围内螺旋搜索
+        int searchRadius = 8;
+        for (int radius = 1; radius <= searchRadius; radius++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    // 只检查当前圈的边缘
+                    if (Math.abs(dx) != radius && Math.abs(dz) != radius) {
+                        continue;
+                    }
+
+                    int x = cx + dx;
+                    int z = cz + dz;
+
+                    // 尝试不同高度
+                    for (int dy = -2; dy <= 2; dy++) {
+                        int y = cy + dy;
+                        if (isPositionValid(world, x, y, z, w, h)) {
+                            return new Location(world, x, y, z);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 找不到合法位置，回退到中心（强制创建）
+        return new Location(world, cx, cy, cz);
+    }
+
+    /**
+     * 检查指定位置是否可以放置传送门
+     * <p>
+     * 要求传送门内部（非门框区域）全部是空气或可替换方块。
+     * 门框位置可以是任意方块（会被替换为黑曜石）。
+     *
+     * @param world 世界
+     * @param cx    中心 X
+     * @param cy    中心 Y
+     * @param cz    中心 Z
+     * @param w     宽度
+     * @param h     高度
+     * @return 可放置返回 true
+     */
+    private boolean isPositionValid(World world, int cx, int cy, int cz,
+                                      int w, int h) {
+        int baseX = cx - (w / 2);
+        int baseY = cy - (h / 2);
+
+        // 检查传送门内部（非门框）是否都是空气
+        for (int y = 1; y < h - 1; y++) {
+            for (int x = 1; x < w - 1; x++) {
+                Block block = world.getBlockAt(baseX + x, baseY + y, cz);
+                Material type = block.getType();
+                if (type != Material.AIR
+                        && type != Material.CAVE_AIR
+                        && type != Material.VOID_AIR
+                        && type != Material.NETHER_PORTAL) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     // ==================== 工具方法 ====================
 
-    /**
-     * 将传送门坐标加入世界索引
-     *
-     * @param loc 传送门坐标
-     */
     private void indexPortal(Location loc) {
         World world = loc.getWorld();
         if (world == null) return;
@@ -310,12 +456,6 @@ public class PortalManager {
                 .add(loc);
     }
 
-    /**
-     * 校验坐标是否有效（世界非空、世界已加载）
-     *
-     * @param loc 待校验坐标
-     * @return 有效返回 true
-     */
     private boolean isValidLocation(Location loc) {
         return loc != null
                 && loc.getWorld() != null
@@ -323,12 +463,6 @@ public class PortalManager {
                         loc.getBlockX() >> 4, loc.getBlockZ() >> 4);
     }
 
-    /**
-     * 从字符串解析坐标（格式：worldName,x,y,z）
-     *
-     * @param s 坐标字符串
-     * @return 解析成功的 Location，失败返回 null
-     */
     private Location parseLocation(String s) {
         if (s == null || s.isEmpty()) return null;
 
@@ -348,11 +482,6 @@ public class PortalManager {
         }
     }
 
-    /**
-     * 获取已注册的传送门数量
-     *
-     * @return 传送门总数
-     */
     public int getPortalCount() {
         return generatedPortals.size();
     }
