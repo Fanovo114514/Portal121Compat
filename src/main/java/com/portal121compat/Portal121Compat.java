@@ -15,6 +15,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.logging.Level;
 
 /**
@@ -192,33 +193,22 @@ public class Portal121Compat extends org.bukkit.plugin.java.JavaPlugin {
             FileConfiguration config = getConfig();
             boolean changed = false;
 
-            if (!config.contains("portal-search-radius-overworld")) {
-                config.set("portal-search-radius-overworld", 128);
-                changed = true;
-            }
-            if (!config.contains("portal-search-radius-nether")) {
-                config.set("portal-search-radius-nether", 16);
-                changed = true;
-            }
-            if (!config.contains("portal-width")) {
-                config.set("portal-width", 4);
-                changed = true;
-            }
-            if (!config.contains("portal-height")) {
-                config.set("portal-height", 5);
-                changed = true;
-            }
-            if (!config.contains("witch-redstone-drop")) {
-                config.set("witch-redstone-drop", false);
-                changed = true;
-            }
-            if (!config.contains("ender-pearl-dimension")) {
-                config.set("ender-pearl-dimension", false);
-                changed = true;
-            }
-            if (!config.contains("hostile-mob-cap-70")) {
-                config.set("hostile-mob-cap-70", false);
-                changed = true;
+            // 默认配置项映射
+            Map<String, Object> defaults = Map.ofEntries(
+                    Map.entry("portal-search-radius-overworld", 128),
+                    Map.entry("portal-search-radius-nether", 16),
+                    Map.entry("portal-width", 4),
+                    Map.entry("portal-height", 5),
+                    Map.entry("witch-redstone-drop", false),
+                    Map.entry("ender-pearl-dimension", false),
+                    Map.entry("hostile-mob-cap-70", false)
+            );
+
+            for (Map.Entry<String, Object> entry : defaults.entrySet()) {
+                if (!config.contains(entry.getKey())) {
+                    config.set(entry.getKey(), entry.getValue());
+                    changed = true;
+                }
             }
 
             if (changed) {
