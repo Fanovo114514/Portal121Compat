@@ -87,25 +87,15 @@ public class EnderPearlListener implements Listener {
         }
 
         // 延迟 2 tick 执行传送（等待传送门方块就绪）
-        final Location teleportTarget = portalLoc.clone().add(0.5, 0, 0.5);
+        final Location teleportTarget = portalLoc.clone().add(0.5, 1, 0.5);
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             if (!player.isOnline()) return;
 
-            // 确保传送目标点安全
-            teleportTarget.add(0, 1, 0); // 传送到传送门内部偏上位置
-
             player.teleportAsync(teleportTarget).thenAccept(success -> {
                 if (success) {
-                    // 给予末影珍珠正常落地伤害（约 2.5 格摔落）
-                    double fallDistance = player.getFallDistance();
-                    if (fallDistance > 0) {
-                        // 模拟约 2.5 格摔落伤害（末影珍珠基础伤害）
-                        double damage = Math.max(0, fallDistance - 2.5) * 1.0;
-                        if (damage > 0) {
-                            player.damage(damage);
-                        }
-                    }
-                    player.setFallDistance(0);
+                    // 末影珍珠跨维度传送给予固定摔落伤害（约 2.5 格）
+                    // 传送后 getFallDistance() 已重置为 0，无法读取原始值
+                    player.damage(2.5);
                 }
             });
         }, 2L);
