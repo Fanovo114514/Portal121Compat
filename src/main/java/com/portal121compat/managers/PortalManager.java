@@ -64,7 +64,7 @@ public class PortalManager {
     private final Map<String, Long> lastRepairTick = new ConcurrentHashMap<>();
 
     /** 防重复修复冷却时间（tick） */
-    private static final long REPAIR_COOLDOWN_TICKS = 20L;
+    private static final long REPAIR_COOLDOWN_TICKS = 1L;
 
     /** 待保存标记，避免高频重复写入 */
     private volatile boolean pendingSave = false;
@@ -324,6 +324,7 @@ public class PortalManager {
      * 创建完整传送门（智能位置搜索 + 修复门框 + 注册坐标）
      * <p>
      * 先在目标位置附近搜索合法放置点，再创建传送门。
+     * 如果附近已有已注册的传送门，直接使用该门的位置。
      *
      * @param center 传送门中心坐标（可能不合法，会自动搜索附近位置）
      */
@@ -331,13 +332,21 @@ public class PortalManager {
         World world = center.getWorld();
         if (world == null) return;
 
+        // 先检查附近是否已有已注册的传送门
+        Location existingPortal = findNearestPortal(center);
+        if (existingPortal != null) {
+            // 已有传送门，直接修复并返回
+            repairPortal(existingPortal);
+            return;
+        }
+
         // 智能搜索合法放置位置
         Location validPos = findValidPortalPosition(center);
 
         // 修复门框（带冷却 + 四角保护）
         repairPortal(validPos);
 
-        // 去重检查
+        // 去重检查（再次确认）
         String worldName = world.getName();
         for (Location portal : generatedPortals) {
             if (portal.getWorld() == null) continue;
@@ -361,8 +370,10 @@ public class PortalManager {
      * 在目标位置附近搜索合法的传送门放置位置
      * <p>
      * 原版 Minecraft 会在目标位置附近搜索一个可以放置传送门的空间。
-     * 本方法在 ±8 格范围内搜索，优先选择中心位置，
+     * 本方法在 ±3 格范围内搜索，优先选择中心位置，
      * 找不到时回退到中心位置（强制创建）。
+     * <p>
+     * 注意：搜索范围越小，来回传送的位置偏差越小。
      *
      * @param center 目标中心坐标
      * @return 合法的传送门中心坐标
@@ -382,8 +393,8 @@ public class PortalManager {
             return new Location(world, cx, cy, cz);
         }
 
-        // 在 ±8 格范围内螺旋搜索
-        int searchRadius = 8;
+        // 在 ±3 格范围内螺旋搜索（减少偏移）
+        int searchRadius = 3;
         for (int radius = 1; radius <= searchRadius; radius++) {
             for (int dx = -radius; dx <= radius; dx++) {
                 for (int dz = -radius; dz <= radius; dz++) {
